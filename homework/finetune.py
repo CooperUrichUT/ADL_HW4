@@ -146,7 +146,7 @@ def train(
     tensorboard_dir.mkdir(exist_ok=True)
     writer = SummaryWriter(log_dir=tensorboard_dir)
 
-    # Initialize model and processor
+    # Extract processor and model from the VLM wrapper
     processor = vlm.processor
     model = vlm.model
 
@@ -264,5 +264,5 @@ def test_model(ckpt_path: str, val_dataset: str = "valid_grader"):
 
 if __name__ == "__main__":
     from fire import Fire
-
+    print("Finetuning VLM model")
     Fire({"demo_train": demo_train, "train": train, "test": test_model})
