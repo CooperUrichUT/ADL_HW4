@@ -1,4 +1,17 @@
 # Homework 4 - A vision language model for tux
+![No Reuse Allowed](https://img.shields.io/badge/Reuse%20of%20Code-Not%20Allowed-red?style=for-the-badge&logo=github)
+
+⚠️ Academic Integrity Notice: This is my original academic work. Copying, reusing, or submitting it for credit in any form is an academic integrity violation and may result in disciplinary action.
+
+___
+
+GRADE: 92/100 
+
+- VLM Model Accuracy: 0.704167 [ 50 / 50 ] 
+  
+- CLIP Model Accuracy: 0.622912 [ 42 / 50 ]
+
+___
 
 In this homework, we will train (fine-tune) two vision-language models on the SuperTuxKart data [here](https://utexas.box.com/shared/static/qubjm5isldqvyimfj9rsmbnvnbezwcv4.zip).
 The first is a generative model, as known the Multimodal Large Language Model (MLLM); the second is a contrastive model, which is a simplified version of the Contrastive Language-Image Model (CLIP).

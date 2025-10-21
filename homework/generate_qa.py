@@ -151,8 +151,69 @@ def extract_kart_objects(
         - center: (x, y) coordinates of the kart's center
         - is_center_kart: Boolean indicating if this is the kart closest to image center
     """
+    # TODO 
 
-    raise NotImplementedError("Not implemented")
+    with open(info_path) as f:
+        info = json.load(f)
+    
+    try:
+        detections = info["detections"][view_index]
+    except IndexError:
+        return []
+
+    # calculate scaling factors
+    scale_x = img_width / ORIGINAL_WIDTH
+    scale_y = img_height / ORIGINAL_HEIGHT
+    img_center = (img_width / 2, img_height / 2)
+    karts = []
+
+    for detection in detections:
+        class_id, track_id, x1, y1, x2, y2 = map(int, detection[:6])
+        
+        # filter non-karts
+        if class_id != 1:
+            continue
+            
+        # coordinates and dimensions
+        x1s = x1 * scale_x
+        y1s = y1 * scale_y
+        x2s = x2 * scale_x
+        y2s = y2 * scale_y
+        width = x2s - x1s
+        height = y2s - y1s
+        
+        # validate bounding box
+        if (width < min_box_size or height < min_box_size or
+            x2s < 0 or x1s > img_width or
+            y2s < 0 or y1s > img_height):
+            continue
+        
+        # center point
+        center = ((x1s + x2s) / 2, (y1s + y2s) / 2)
+        
+        # kart name from metadata
+        instance_data = info.get("instances", info.get("karts", {}))
+        if isinstance(instance_data, list):
+            kart_name = instance_data[track_id] if track_id < len(instance_data) else f"kart_{track_id}"
+        else:
+            kart_name = instance_data.get(str(track_id), f"kart_{track_id}")
+        
+        karts.append({
+            "instance_id": track_id,
+            "kart_name": kart_name,
+            "center": center
+        })
+
+    # find ego kart that is closest to image center
+    if karts:
+        ego_kart = min(karts, key=lambda k: 
+            (k["center"][0] - img_center[0])**2 + 
+            (k["center"][1] - img_center[1])**2
+        )
+        for kart in karts:
+            kart["is_center_kart"] = (kart["instance_id"] == ego_kart["instance_id"])
+    
+    return karts
 
 
 def extract_track_info(info_path: str) -> str:
@@ -165,8 +226,18 @@ def extract_track_info(info_path: str) -> str:
     Returns:
         Track name as a string
     """
+    # TODO
 
-    raise NotImplementedError("Not implemented")
+    with open(info_path) as f:
+        info = json.load(f)
+
+    track_info = info.get("track", {})
+    if isinstance(track_info, str):
+        return track_info  
+    elif isinstance(track_info, dict):
+        return track_info.get("name", "Unknown Track")  
+    else:
+        return "Unknown Track"  
 
 
 def generate_qa_pairs(info_path: str, view_index: int, img_width: int = 150, img_height: int = 100) -> list:
@@ -202,7 +273,64 @@ def generate_qa_pairs(info_path: str, view_index: int, img_width: int = 150, img
     # How many karts are in front of the ego car?
     # How many karts are behind the ego car?
 
-    raise NotImplementedError("Not implemented")
+    # TODO 
+
+    karts = extract_kart_objects(info_path, view_index, img_width, img_height)
+    if not karts:
+        return []
+
+    # ego kart (center kart) and track name
+    ego = next(k for k in karts if k["is_center_kart"])
+    track_name = extract_track_info(info_path)
+    ego_x, ego_y = ego["center"]
+    
+    # init counters and QA list
+    position_counts = {"left": 0, "right": 0, "front": 0, "back": 0}
+    qa_pairs = [
+        {"question": "What kart is the ego car?", "answer": ego["kart_name"]},
+        {"question": "How many karts are there in the scenario?", "answer": str(len(karts))},
+        {"question": "What track is this?", "answer": track_name}
+    ]
+    
+    # process each non-ego kart
+    for kart in karts:
+        if kart["instance_id"] == ego["instance_id"]:
+            continue
+            
+        x, y = kart["center"]
+        relative_position = {
+            "horizontal": "left" if x < ego_x else "right",
+            "vertical": "front" if y < ego_y else "back"
+        }
+        
+        # update counters
+        position_counts[relative_position["horizontal"]] += 1
+        position_counts[relative_position["vertical"]] += 1
+        
+        # kart-specific questions
+        qa_pairs.extend([
+            {
+                "question": f"Is {kart['kart_name']} to the left or right of the ego car?",
+                "answer": relative_position["horizontal"]
+            },
+            {
+                "question": f"Is {kart['kart_name']} in front of or behind the ego car?",
+                "answer": relative_position["vertical"]
+            },
+            {
+                "question": f"Where is {kart['kart_name']} relative to the ego car?",
+                "answer": f"{relative_position['vertical']} and {relative_position['horizontal']}"
+            }
+        ])
+    
+    qa_pairs.extend([
+        {"question": "How many karts are to the left of the ego car?", "answer": str(position_counts["left"])},
+        {"question": "How many karts are to the right of the ego car?", "answer": str(position_counts["right"])},
+        {"question": "How many karts are in front of the ego car?", "answer": str(position_counts["front"])},
+        {"question": "How many karts are behind the ego car?", "answer": str(position_counts["back"])}
+    ])
+    
+    return qa_pairs
 
 
 def check_qa_pairs(info_file: str, view_index: int):
@@ -247,10 +375,56 @@ Usage Example: Visualize QA pairs for a specific file and view:
 You probably need to add additional commands to Fire below.
 """
 
+from pathlib import Path
+import json
+from typing import List, Dict
+from tqdm import tqdm 
+
+def generate_all(
+    input_dir: str = "data/train",
+    output_file: str | None = None,
+    max_views: int = 10,
+) -> int:
+    input_dir = Path(input_dir)
+    split_name = input_dir.name
+
+    if output_file is None:
+        output_file = input_dir / f"{split_name}_qa_pairs.json"
+    else:
+        output_file = Path(output_file)
+
+    qa_dataset: List[Dict[str, str]] = []
+
+    info_files = list(input_dir.glob("*_info.json"))
+    for info_path in tqdm(info_files, desc=f"Building QA pairs for {split_name}"):
+        stub = info_path.stem.replace("_info", "")
+        for view in range(max_views):
+            try:
+                pairs = generate_qa_pairs(str(info_path), view)
+            except Exception:
+                continue
+
+            if not pairs:
+                continue
+
+            image_stub = f"{split_name}/{stub}_{view:02d}_im.jpg"
+            for qa in pairs:
+                qa["image_file"] = image_stub
+            qa_dataset.extend(pairs)
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(json.dumps(qa_dataset, indent=2))
+
+    print(f"\nSaved {len(qa_dataset):,} QA pairs → {output_file}")
+    return len(qa_dataset)
 
 def main():
-    fire.Fire({"check": check_qa_pairs})
-
+    fire.Fire(
+        {
+            "check": check_qa_pairs,
+            "generate_all": generate_all,   
+        }
+    )
 
 if __name__ == "__main__":
     main()

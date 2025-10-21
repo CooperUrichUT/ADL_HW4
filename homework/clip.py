@@ -102,7 +102,21 @@ class CLIP(nn.Module):
         self.vision_encoder = vision_encoder
         self.text_encoder = text_encoder
         # TODO: implement the rest components
-        raise NotImplementedError("Not implemented")
+        vision_hidden = self.vision_encoder.config.hidden_size
+        text_hidden = self.text_encoder.config.hidden_size
+
+        self.vision_proj = nn.Linear(vision_hidden, proj_dim, bias=True)
+        self.text_proj   = nn.Linear(text_hidden,   proj_dim, bias=True)
+
+        nn.init.normal_(self.vision_proj.weight, std=vision_hidden ** -0.5)
+        nn.init.zeros_(self.vision_proj.bias)
+        nn.init.normal_(self.text_proj.weight, std=text_hidden ** -0.5)
+        nn.init.zeros_(self.text_proj.bias)
+
+        self.register_buffer(
+            "logit_log_temp",
+            torch.log(torch.tensor(1.0 / float(temperature), dtype=torch.float32))
+        )
 
     def encode_image(self, image: torch.Tensor) -> torch.Tensor:
         return self.vision_encoder(image)
@@ -180,7 +194,36 @@ class CLIP(nn.Module):
         Returns:
             TODO: think about the what values should be returned
         """
-        raise NotImplementedError("Not implemented")
+        # TODO 
+        v_out = self.vision_encoder(pixel_values=pixel_values, return_dict=True).last_hidden_state
+        t_out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask, return_dict=True).last_hidden_state
+
+        # pooling - tip from ED Post 
+        v_pooled = v_out.mean(dim=1)
+        if attention_mask is not None:
+            # mask same dtype as t_out to avoid upcasting to float32
+            mask = attention_mask.to(dtype=t_out.dtype).unsqueeze(-1)
+            t_pooled = (t_out * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
+        else:
+            t_pooled = t_out.mean(dim=1)
+            
+        # cast pooled features to the projection layers' dtypes
+        v_pooled = v_pooled.to(self.vision_proj.weight.dtype)
+        t_pooled = t_pooled.to(self.text_proj.weight.dtype)
+
+        # proj
+        img = self.vision_proj(v_pooled)
+        txt = self.text_proj(t_pooled)
+
+        # normalize
+        img = img / (img.norm(dim=-1, keepdim=True) + 1e-7)
+        txt = txt / (txt.norm(dim=-1, keepdim=True) + 1e-7)
+
+        # logit_scale the same dtype as embeddings
+        logit_scale = self.logit_log_temp.to(img.dtype).exp().clamp(min=1.0, max=100.0)
+        logits = logit_scale * (img @ txt.t())
+
+        return img, txt, logits
 
 
 def compute_clip_loss(
@@ -199,7 +242,13 @@ def compute_clip_loss(
     Returns:
         The loss for the CLIP model.
     """
-    raise NotImplementedError("Not implemented")
+    # TODO 
+    img_emb, txt_emb, logits = outputs
+    n = logits.size(0)
+    target = torch.arange(n, device=logits.device)
+    loss_i2t = nn.functional.cross_entropy(logits,   target, label_smoothing=0.05)
+    loss_t2i = nn.functional.cross_entropy(logits.T, target, label_smoothing=0.05)
+    return 0.5 * (loss_i2t + loss_t2i)
 
 
 def get_target_modules_for_lora(model: nn.Module) -> list[str]:

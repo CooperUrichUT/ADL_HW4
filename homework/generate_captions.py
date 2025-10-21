@@ -22,7 +22,47 @@ def generate_caption(info_path: str, view_index: int, img_width: int = 150, img_
     # 4. Relative position
     # {kart_name} is {position} of the ego car.
 
-    raise NotImplementedError("Not implemented")
+    # TODO 
+    karts = extract_kart_objects(info_path, view_index, img_width, img_height)
+    if not karts:
+        return []
+
+    ego = next(k for k in karts if k.get("is_center_kart", False))
+    track = extract_track_info(info_path)
+    captions = []
+    
+    # ego kart descriptions
+    captions.append(f"{ego['kart_name']} is positioned as the ego kart on the {track} track.")
+    captions.append(f"The ego kart on the {track} track is {ego['kart_name']}.")
+    
+    # kart counting
+    num_others = len(karts) - 1
+    captions.append(f"There are {num_others} other karts present with {ego['kart_name']} on the {track} track.")
+    captions.append(f"{ego['kart_name']} is navigating the {track} track alongside {num_others} other karts.")
+
+    # individual karts
+    others = [k for k in karts if k["instance_id"] != ego["instance_id"]]
+    for other in others:
+        lr = "left" if other["center"][0] < ego["center"][0] else "right"
+        fb = "ahead" if other["center"][1] < ego["center"][1] else "behind"
+        
+        captions.append(f"{other['kart_name']} is positioned {fb} and to the {lr} of the ego car")
+        captions.append(f"To the {lr} and {fb} of {ego['kart_name']} is {other['kart_name']}")
+
+    # combined position summary (only if 2+ other karts)
+    if len(others) > 1:
+        positions = []
+        for other in others:
+            lr = "left" if other["center"][0] < ego["center"][0] else "right"
+            fb = "ahead" if other["center"][1] < ego["center"][1] else "behind"
+            positions.append(f"{other['kart_name']} ({fb}-{lr})")
+        
+        captions.append(
+            f"Kart positions relative to {ego['kart_name']}: " 
+            f"{', '.join(positions[:-1])} and {positions[-1]}"
+        )
+    
+    return captions
 
 
 def check_caption(info_file: str, view_index: int):
@@ -53,6 +93,38 @@ Usage Example: Visualize QA pairs for a specific file and view:
 
 You probably need to add additional commands to Fire below.
 """
+
+import json
+from pathlib import Path
+from tqdm import tqdm
+import fire
+
+def generate_all(
+    input_dir: str = "data/train",
+    output_file: str = "data/train/train_captions.json",
+    max_views: int = 10,
+):
+    root = Path(input_dir).resolve()
+    records = []
+
+    for info_path in tqdm(root.rglob("*_info.json"), desc="Processing JSON files"):
+        stem = info_path.stem.removesuffix("_info")
+
+        for view in range(max_views):
+            captions = generate_caption(str(info_path), view)
+            if not captions:
+                continue
+
+            jpg_path = info_path.parent / f"{stem}_{view:02d}_im.jpg"
+            rel_path = Path("train") / jpg_path.relative_to(root)
+
+            records.extend(
+                {"image_file": str(rel_path), "caption": caption}
+                for caption in captions
+            )
+
+    Path(output_file).write_text(json.dumps(records, indent=2))
+    print(f"Saved {len(records):,} captions → {output_file}")
 
 
 def main():

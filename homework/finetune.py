@@ -110,8 +110,8 @@ class VQADatasetForTraining(Dataset):
 def train(
     data_dir: Path | None = None,
     train_dataset_name: str = "train",
-    output_dir: str = "vlm_sft",
-    num_train_epochs: int = 0.05,  # use only 0.05 epoch for training
+    output_dir: str = "vlm_model",
+    num_train_epochs: int = 0.1,  # use only 0.05 epoch for training
     per_device_train_batch_size: int = 8,
     gradient_accumulation_steps: int = 4,
     learning_rate: float = 5e-4,
@@ -146,7 +146,7 @@ def train(
     tensorboard_dir.mkdir(exist_ok=True)
     writer = SummaryWriter(log_dir=tensorboard_dir)
 
-    # Extract processor and model from the VLM wrapper
+    # Initialize model and processor
     processor = vlm.processor
     model = vlm.model
 
@@ -264,5 +264,5 @@ def test_model(ckpt_path: str, val_dataset: str = "valid_grader"):
 
 if __name__ == "__main__":
     from fire import Fire
-    print("Finetuning VLM model")
+
     Fire({"demo_train": demo_train, "train": train, "test": test_model})
