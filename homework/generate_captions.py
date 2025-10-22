@@ -120,7 +120,12 @@ def generate_all(
 
 
 def main():
-    fire.Fire({"check": check_caption})
+    fire.Fire(
+        {
+            "check": check_caption,
+            "generate_all": generate_all,   
+        }
+    )
 
 
 if __name__ == "__main__":
