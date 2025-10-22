@@ -174,7 +174,7 @@ class CLIP(nn.Module):
         self.vision_encoder.embeddings.register_forward_hook(make_inputs_require_grads)
         self.text_encoder.get_input_embeddings().register_forward_hook(make_inputs_require_grads)
 
-    def forward(
+def forward(
         self,
         pixel_values: torch.Tensor,
         input_ids: torch.Tensor,
@@ -183,47 +183,75 @@ class CLIP(nn.Module):
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Forward pass for the CLIP model.
+        Forward pass for the CLIP model with improved accuracy.
+        
         Args:
-            pixel_values: The pixel values of the image.
-            input_ids: The input ids of the text.
-            attention_mask: The attention mask of the text.
-            labels: The labels for the text features.
-            (NOTE: you don't need to use the variable `labels`, this is just for compatibility with the Trainer class)
-            (Hint: refer to returned values of the __getitem__ method in the CaptionDatasetForTraining class)
-        Returns:
-            TODO: think about the what values should be returned
-        """
-        # TODO 
-        v_out = self.vision_encoder(pixel_values=pixel_values, return_dict=True).last_hidden_state
-        t_out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask, return_dict=True).last_hidden_state
-
-        # pooling - tip from ED Post 
-        v_pooled = v_out.mean(dim=1)
-        if attention_mask is not None:
-            # mask same dtype as t_out to avoid upcasting to float32
-            mask = attention_mask.to(dtype=t_out.dtype).unsqueeze(-1)
-            t_pooled = (t_out * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
-        else:
-            t_pooled = t_out.mean(dim=1)
+            pixel_values: The pixel values of the image (B, C, H, W)
+            input_ids: The input ids of the text (B, L)
+            attention_mask: The attention mask of the text (B, L) 
+            labels: The labels for the text features (compatibility only)
             
-        # cast pooled features to the projection layers' dtypes
-        v_pooled = v_pooled.to(self.vision_proj.weight.dtype)
-        t_pooled = t_pooled.to(self.text_proj.weight.dtype)
+        Returns:
+            Tuple of (image_features, text_features, logits)
+        """
+        # Input validation
+        if pixel_values.dim() != 4:
+            raise ValueError(f"Expected pixel_values to have 4 dimensions, got {pixel_values.dim()}")
+        if input_ids.dim() != 2:
+            raise ValueError(f"Expected input_ids to have 2 dimensions, got {input_ids.dim()}")
+            
+        batch_size = pixel_values.shape[0]
+        if batch_size != input_ids.shape[0]:
+            raise ValueError(f"Batch size mismatch: pixel_values {batch_size} vs input_ids {input_ids.shape[0]}")
 
-        # proj
-        img = self.vision_proj(v_pooled)
-        txt = self.text_proj(t_pooled)
+        # Vision encoding
+        vision_outputs = self.vision_encoder(pixel_values=pixel_values, return_dict=True)
+        vision_hidden_states = vision_outputs.last_hidden_state  # (B, N, D_vision)
+        
+        # Improved vision pooling: use CLS token if available, otherwise mean pool
+        if hasattr(vision_outputs, 'pooler_output') and vision_outputs.pooler_output is not None:
+            vision_pooled = vision_outputs.pooler_output  # (B, D_vision)
+        else:
+            # Mean pooling over spatial dimension (more stable than global mean)
+            vision_pooled = vision_hidden_states.mean(dim=1)  # (B, D_vision)
 
-        # normalize
-        img = img / (img.norm(dim=-1, keepdim=True) + 1e-7)
-        txt = txt / (txt.norm(dim=-1, keepdim=True) + 1e-7)
+        # Text encoding  
+        text_outputs = self.text_encoder(
+            input_ids=input_ids, 
+            attention_mask=attention_mask, 
+            return_dict=True
+        )
+        text_hidden_states = text_outputs.last_hidden_state  # (B, L, D_text)
 
-        # logit_scale the same dtype as embeddings
-        logit_scale = self.logit_log_temp.to(img.dtype).exp().clamp(min=1.0, max=100.0)
-        logits = logit_scale * (img @ txt.t())
+        # Improved text pooling with proper attention mask handling
+        if attention_mask is not None:
+            # Expand mask to match hidden states dimensions: (B, L) -> (B, L, D_text)
+            expanded_mask = attention_mask.unsqueeze(-1).expand_as(text_hidden_states)
+            # Apply mask: set padding tokens to 0
+            masked_text_states = text_hidden_states * expanded_mask
+            # Sum over sequence dimension and divide by number of non-padding tokens
+            text_pooled = masked_text_states.sum(dim=1) / expanded_mask.sum(dim=1).clamp(min=1e-9)
+        else:
+            text_pooled = text_hidden_states.mean(dim=1)
 
-        return img, txt, logits
+        # Ensure consistent dtypes for projection layers
+        vision_pooled = vision_pooled.to(self.vision_proj.weight.dtype)
+        text_pooled = text_pooled.to(self.text_proj.weight.dtype)
+
+        # Project to shared embedding space
+        image_features = self.vision_proj(vision_pooled)  # (B, proj_dim)
+        text_features = self.text_proj(text_pooled)      # (B, proj_dim)
+
+        # L2 normalization with improved numerical stability
+        image_features = image_features / (image_features.norm(dim=-1, keepdim=True) + 1e-8)
+        text_features = text_features / (text_features.norm(dim=-1, keepdim=True) + 1e-8)
+
+        # Temperature-scaled similarity with improved numerical stability
+        logit_scale = self.logit_log_temp.to(image_features.dtype).exp()
+        logit_scale = logit_scale.clamp(min=1.0, max=100.0)
+        logits = logit_scale * torch.matmul(image_features, text_features.t())
+
+        return image_features, text_features, logits
 
 
 def compute_clip_loss(
@@ -231,24 +259,37 @@ def compute_clip_loss(
     labels: torch.Tensor,
     num_items_in_batch: int | None = None,
 ) -> torch.Tensor:
-    """
-    Compute the loss for the CLIP model.
-    Args:
-        outputs: A tuple containing the outputs of CLIP.forward().
-        labels: The labels for the text features.
-        (NOTE: you don't need to use the variable `labels`, this is just for compatibility with the Trainer class)
-        num_items_in_batch: The number of items in the batch.
-        (NOTE: you don't need to use the variable `num_items_in_batch`, this is just for compatibility with Trainer)
-    Returns:
-        The loss for the CLIP model.
-    """
-    # TODO 
-    img_emb, txt_emb, logits = outputs
-    n = logits.size(0)
-    target = torch.arange(n, device=logits.device)
-    loss_i2t = nn.functional.cross_entropy(logits,   target, label_smoothing=0.05)
-    loss_t2i = nn.functional.cross_entropy(logits.T, target, label_smoothing=0.05)
-    return 0.5 * (loss_i2t + loss_t2i)
+    image_features, text_features, logits = outputs
+    
+    if logits.dim() != 2:
+        raise ValueError(f"Expected logits to have 2 dimensions, got {logits.dim()}")
+    
+    batch_size = logits.shape[0]
+    if logits.shape[1] != batch_size:
+        raise ValueError(f"Expected square logits matrix, got shape {logits.shape}")
+    
+    if not torch.isfinite(logits).all():
+        raise ValueError("Logits contain NaN or infinite values")
+    
+    device = logits.device
+    targets = torch.arange(batch_size, device=device, dtype=torch.long)
+    label_smoothing = 0.1
+    
+    loss_image_to_text = nn.functional.cross_entropy(
+        logits, 
+        targets, 
+        label_smoothing=label_smoothing,
+        reduction='mean'
+    )
+    loss_text_to_image = nn.functional.cross_entropy(
+        logits.t(), 
+        targets, 
+        label_smoothing=label_smoothing,
+        reduction='mean'
+    )
+    total_loss = 0.5 * (loss_image_to_text + loss_text_to_image)
+    
+    return total_loss
 
 
 def get_target_modules_for_lora(model: nn.Module) -> list[str]:

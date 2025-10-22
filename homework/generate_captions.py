@@ -7,11 +7,9 @@ from .generate_qa import draw_detections, extract_frame_info, extract_kart_objec
 
 
 def generate_caption(info_path: str, view_index: int, img_width: int = 150, img_height: int = 100) -> list:
-    import json
-
     try:
         with open(info_path) as f:
-            info = json.load(f)
+            data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return []
 
@@ -19,41 +17,109 @@ def generate_caption(info_path: str, view_index: int, img_width: int = 150, img_
     if not karts:
         return []
 
-    ego = next(k for k in karts if k.get("is_center_kart", False))
-    track = extract_track_info(info_path)
+    ego_kart = next(kart for kart in karts if kart["is_center_kart"])
+    track_name = extract_track_info(info_path)
+
+    ego_name = ego_kart["kart_name"]
+    ego_center_x, ego_center_y = ego_kart["center"]
+    other_karts = [kart for kart in karts if not kart["is_center_kart"]]
+
     captions = []
-    
-    # ego kart descriptions
-    captions.append(f"{ego['kart_name']} is positioned as the ego kart on the {track} track.")
-    captions.append(f"The ego kart on the {track} track is {ego['kart_name']}.")
+    other_count = len(other_karts)
 
-    # kart counting
-    num_others = len(karts) - 1
-    captions.append(f"There are {num_others} other karts present with {ego['kart_name']} on the {track} track.")
-    captions.append(f"{ego['kart_name']} is navigating the {track} track alongside {num_others} other karts.")
+    # Diverse ego-centric descriptions
+    ego_descriptions = [
+        f"From {ego_name}'s perspective, racing on the {track_name} track.",
+        f"{ego_name} leads the race on the {track_name} circuit.",
+        f"The race view from {ego_name}'s kart on the {track_name} track.",
+        f"{ego_name} navigates the {track_name} track in this racing scene.",
+    ]
+    captions.extend(ego_descriptions[:2])  # Use first 2 for variety
 
-    # individual karts
-    others = [k for k in karts if k["instance_id"] != ego["instance_id"]]
-    for other in others:
-        lr = "left" if other["center"][0] < ego["center"][0] else "right"
-        fb = "ahead" if other["center"][1] < ego["center"][1] else "behind"
+    # Rich positional descriptions with racing context
+    position_templates = [
+        "{other_name} is racing {vertical_pos} and to the {horizontal_pos} of {ego_name}",
+        "{other_name} appears {vertical_pos} and {horizontal_pos} from {ego_name}'s viewpoint",
+        "In the {horizontal_pos}, {other_name} is positioned {vertical_pos} of {ego_name}",
+        "{ego_name} can see {other_name} {vertical_pos} and to the {horizontal_pos}",
+    ]
 
-        captions.append(f"{other['kart_name']} is positioned {fb} and to the {lr} of the ego car")
-        captions.append(f"To the {lr} and {fb} of {ego['kart_name']} is {other['kart_name']}")
+    for i, other_kart in enumerate(other_karts):
+        other_name = other_kart["kart_name"]
+        other_x, other_y = other_kart["center"]
+        
+        horizontal_pos = "left" if other_x < ego_center_x else "right"
+        vertical_pos = "ahead" if other_y < ego_center_y else "behind"
+        
+        # Use different template for variety
+        template = position_templates[i % len(position_templates)]
+        captions.append(template.format(
+            other_name=other_name,
+            ego_name=ego_name,
+            horizontal_pos=horizontal_pos,
+            vertical_pos=vertical_pos
+        ))
 
-    # combined position summary (only if 2+ other karts)
-    if len(others) > 1:
-        positions = []
-        for other in others:
-            lr = "left" if other["center"][0] < ego["center"][0] else "right"
-            fb = "ahead" if other["center"][1] < ego["center"][1] else "behind"
-            positions.append(f"{other['kart_name']} ({fb}-{lr})")
+    # Enhanced counting descriptions
+    if other_count == 0:
+        captions.extend([
+            f"{ego_name} races alone on the {track_name} track.",
+            f"The {track_name} track is clear ahead for {ego_name}.",
+        ])
+    elif other_count == 1:
+        other_name = other_karts[0]["kart_name"]
+        other_x, other_y = other_karts[0]["center"]
+        horizontal_pos = "left" if other_x < ego_center_x else "right"
+        vertical_pos = "ahead" if other_y < ego_center_y else "behind"
+        
+        captions.extend([
+            f"{ego_name} races against one opponent on the {track_name} track.",
+            f"Only {other_name} is visible {vertical_pos} and to the {horizontal_pos}.",
+            f"The competition includes {ego_name} and {other_name} on the {track_name} circuit.",
+        ])
+    else:
+        # Multiple competitors - more strategic descriptions
+        ahead_count = sum(1 for k in other_karts if k["center"][1] < ego_center_y)
+        behind_count = other_count - ahead_count
+        
+        captions.extend([
+            f"{ego_name} is racing with {other_count} competitors on the {track_name} track.",
+            f"{ahead_count} karts are ahead while {behind_count} trail behind {ego_name}.",
+            f"The {track_name} track is busy with {ego_name} and {other_count} other racers.",
+        ])
 
-        captions.append(
-            f"Kart positions relative to {ego['kart_name']}: "
-            f"{', '.join(positions[:-1])} and {positions[-1]}"
-        )
-    
+    # Add track-specific context when available
+    if track_name != "Unknown Track":
+        captions.extend([
+            f"{ego_name} competes on the challenging {track_name} circuit.",
+            f"The {track_name} track conditions favor {ego_name}'s racing line.",
+        ])
+
+    # Summary position overview (enhanced)
+    if other_count > 1:
+        ahead_karts = [k for k in other_karts if k["center"][1] < ego_center_y]
+        behind_karts = [k for k in other_karts if k["center"][1] >= ego_center_y]
+        left_karts = [k for k in other_karts if k["center"][0] < ego_center_x]
+        right_karts = [k for k in other_karts if k["center"][0] >= ego_center_x]
+        
+        position_summary = []
+        if ahead_karts:
+            ahead_names = [k["kart_name"] for k in ahead_karts]
+            position_summary.append(f"ahead: {', '.join(ahead_names)}")
+        if behind_karts:
+            behind_names = [k["kart_name"] for k in behind_karts]
+            position_summary.append(f"behind: {', '.join(behind_names)}")
+        if left_karts:
+            left_names = [k["kart_name"] for k in left_karts]
+            position_summary.append(f"left: {', '.join(left_names)}")
+        if right_karts:
+            right_names = [k["kart_name"] for k in right_karts]
+            position_summary.append(f"right: {', '.join(right_names)}")
+            
+        if position_summary:
+            summary_text = "; ".join(position_summary)
+            captions.append(f"Racing situation overview - {summary_text}")
+
     return captions
 
 
