@@ -3,26 +3,18 @@ from pathlib import Path
 import fire
 from matplotlib import pyplot as plt
 
-from .generate_qa import draw_detections, extract_frame_info
+from .generate_qa import draw_detections, extract_frame_info, extract_kart_objects, extract_track_info
 
 
 def generate_caption(info_path: str, view_index: int, img_width: int = 150, img_height: int = 100) -> list:
-    """
-    Generate caption for a specific view.
-    """
-    # 1. Ego car
-    # {kart_name} is the ego car.
+    import json
 
-    # 2. Counting
-    # There are {num_karts} karts in the scenario.
+    try:
+        with open(info_path) as f:
+            info = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
 
-    # 3. Track name
-    # The track is {track_name}.
-
-    # 4. Relative position
-    # {kart_name} is {position} of the ego car.
-
-    # TODO 
     karts = extract_kart_objects(info_path, view_index, img_width, img_height)
     if not karts:
         return []
@@ -34,7 +26,7 @@ def generate_caption(info_path: str, view_index: int, img_width: int = 150, img_
     # ego kart descriptions
     captions.append(f"{ego['kart_name']} is positioned as the ego kart on the {track} track.")
     captions.append(f"The ego kart on the {track} track is {ego['kart_name']}.")
-    
+
     # kart counting
     num_others = len(karts) - 1
     captions.append(f"There are {num_others} other karts present with {ego['kart_name']} on the {track} track.")
@@ -45,7 +37,7 @@ def generate_caption(info_path: str, view_index: int, img_width: int = 150, img_
     for other in others:
         lr = "left" if other["center"][0] < ego["center"][0] else "right"
         fb = "ahead" if other["center"][1] < ego["center"][1] else "behind"
-        
+
         captions.append(f"{other['kart_name']} is positioned {fb} and to the {lr} of the ego car")
         captions.append(f"To the {lr} and {fb} of {ego['kart_name']} is {other['kart_name']}")
 
@@ -56,9 +48,9 @@ def generate_caption(info_path: str, view_index: int, img_width: int = 150, img_
             lr = "left" if other["center"][0] < ego["center"][0] else "right"
             fb = "ahead" if other["center"][1] < ego["center"][1] else "behind"
             positions.append(f"{other['kart_name']} ({fb}-{lr})")
-        
+
         captions.append(
-            f"Kart positions relative to {ego['kart_name']}: " 
+            f"Kart positions relative to {ego['kart_name']}: "
             f"{', '.join(positions[:-1])} and {positions[-1]}"
         )
     
