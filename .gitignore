@@ -1,5 +1,3 @@
-# Ignore the data folder and all its contents
-data/
 
 # Also ignore the zip file since it likely contains the same data
 supertux_data.zip
