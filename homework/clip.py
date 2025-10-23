@@ -216,9 +216,8 @@ class CLIP(nn.Module):
         if input_ids.dim() != 2:
             raise ValueError(f"Expected input_ids to have 2 dimensions, got {input_ids.dim()}")
             
-        batch_size = pixel_values.shape[0]
-        if batch_size != input_ids.shape[0]:
-            raise ValueError(f"Batch size mismatch: pixel_values {batch_size} vs input_ids {input_ids.shape[0]}")
+        # Allow different batch sizes between image and text during inference (e.g., 1 image vs N texts)
+        # Training still produces matching batch sizes via the collator.
 
         # Vision encoding
         vision_outputs = self.vision_encoder(pixel_values=pixel_values, return_dict=True)
@@ -427,6 +426,7 @@ def test(ckpt_path: str, val_dataset: str = "valid_grader"):
 
     clip = load(ckpt_path)
     clip = clip.model.to(device)
+    clip.eval()
 
     image_processor = tv.transforms.Compose(
         [
@@ -451,8 +451,8 @@ def test(ckpt_path: str, val_dataset: str = "valid_grader"):
         )
         input_ids = text_inputs["input_ids"].long().to(device)
         attention_mask = text_inputs["attention_mask"].to(device)
-        vision_feature, text_feature, _ = clip(pixel_values, input_ids, attention_mask)
-        prediction = torch.matmul(vision_feature, text_feature.T).argmax(dim=-1)
+        _, _, logits = clip(pixel_values, input_ids, attention_mask)
+        prediction = logits.argmax(dim=-1).item()
         if prediction == pair["correct_index"]:
             correct_count += 1
         total_count += 1
