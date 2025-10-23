@@ -41,18 +41,34 @@ def load(model_name: str = "clip_model"):
 
 def clip_data_collator(features: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     """
-    Custom data collator for CLIP training.
+    Custom data collator for CLIP training. Tolerates missing input_ids by
+    falling back to labels when necessary.
     """
+    # Select text tensors (prefer input_ids, fallback to labels)
+    text_tensors = []
+    attn_masks = []
+    for f in features:
+        text_ids = f.get("input_ids", f.get("labels"))
+        if text_ids is None:
+            raise KeyError("Neither 'input_ids' nor 'labels' found in a feature.")
+        text_tensors.append(text_ids)
+        if "attention_mask" in f:
+            attn_masks.append(f["attention_mask"])
+        else:
+            attn_masks.append(torch.ones_like(text_ids, dtype=torch.long))
+
     # Get max sequence length
-    max_length = max(f["input_ids"].shape[0] for f in features)
+    max_length = max(t.shape[0] for t in text_tensors)
 
     def pad_tensor(tensor, pad_value):
+        if tensor.shape[0] == max_length:
+            return tensor
         return torch.cat([tensor, torch.full((max_length - tensor.shape[0],), pad_value, dtype=tensor.dtype)])
 
-    input_ids = torch.stack([pad_tensor(f["input_ids"], pad_value=processor.tokenizer.eos_token_id) for f in features])
-    attention_mask = torch.stack([pad_tensor(f["attention_mask"], pad_value=0) for f in features])
+    input_ids = torch.stack([pad_tensor(t, pad_value=processor.tokenizer.eos_token_id) for t in text_tensors])
+    attention_mask = torch.stack([pad_tensor(m, pad_value=0) for m in attn_masks])
     pixel_values = torch.stack([f["pixel_values"] for f in features])  # assume all are same shape
-    labels = torch.stack([pad_tensor(f["labels"], pad_value=-100) for f in features])
+    labels = torch.stack([pad_tensor(f.get("labels", t), pad_value=-100) for f, t in zip(features, text_tensors)])
 
     return {
         "input_ids": input_ids.long(),
@@ -174,7 +190,7 @@ class CLIP(nn.Module):
         self.vision_encoder.embeddings.register_forward_hook(make_inputs_require_grads)
         self.text_encoder.get_input_embeddings().register_forward_hook(make_inputs_require_grads)
 
-def forward(
+    def forward(
         self,
         pixel_values: torch.Tensor,
         input_ids: torch.Tensor,
@@ -252,6 +268,8 @@ def forward(
         logits = logit_scale * torch.matmul(image_features, text_features.t())
 
         return image_features, text_features, logits
+
+# (moved forward into CLIP class)
 
 
 def compute_clip_loss(
@@ -368,6 +386,7 @@ def train(
         save_total_limit=2,
         label_names=["labels"],
         dataloader_num_workers=num_workers,
+        remove_unused_columns=False,
     )
 
     trainer = Trainer(
