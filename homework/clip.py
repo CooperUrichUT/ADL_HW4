@@ -114,24 +114,88 @@ class CLIP(nn.Module):
     def __init__(
         self, vision_encoder: nn.Module, text_encoder: nn.Module, proj_dim: int = 64, temperature: float = 0.07
     ):
+        """
+        Initialize CLIP model with vision and text encoders.
+        
+        Args:
+            vision_encoder: Vision encoder model (e.g., ViT, CLIP vision model)
+            text_encoder: Text encoder model (e.g., BERT, CLIP text model) 
+            proj_dim: Dimension of shared projection space (default: 64)
+            temperature: Temperature scaling for similarity (default: 0.07)
+            
+        Raises:
+            AttributeError: If encoders don't have expected config structure
+            ValueError: If temperature is non-positive
+        """
         super().__init__()
+        
+        # Input validation
+        self._validate_inputs(vision_encoder, text_encoder, proj_dim, temperature)
+        
+        # Store encoders
         self.vision_encoder = vision_encoder
         self.text_encoder = text_encoder
-        # TODO: implement the rest components
-        vision_hidden = self.vision_encoder.config.hidden_size
-        text_hidden = self.text_encoder.config.hidden_size
+        
+        # Get hidden dimensions and create projection layers
+        vision_hidden, text_hidden = self._get_hidden_sizes()
+        self._create_projection_layers(vision_hidden, text_hidden, proj_dim)
+        self._initialize_temperature(temperature)
 
+    def _validate_inputs(
+        self, 
+        vision_encoder: nn.Module, 
+        text_encoder: nn.Module, 
+        proj_dim: int, 
+        temperature: float
+    ) -> None:
+        """Validate initialization inputs."""
+        if proj_dim <= 0:
+            raise ValueError(f"proj_dim must be positive, got {proj_dim}")
+        if temperature <= 0:
+            raise ValueError(f"temperature must be positive, got {temperature}")
+            
+        # Check that encoders have config
+        if not hasattr(vision_encoder, 'config'):
+            raise AttributeError("vision_encoder must have a 'config' attribute")
+        if not hasattr(text_encoder, 'config'):
+            raise AttributeError("text_encoder must have a 'config' attribute")
+
+    def _get_hidden_sizes(self) -> tuple[int, int]:
+        """Get hidden dimensions from encoder configs."""
+        def get_hidden_size(encoder: nn.Module, name: str) -> int:
+            config = encoder.config
+            if hasattr(config, 'hidden_size'):
+                return config.hidden_size
+            else:
+                raise AttributeError(f"{name} config missing 'hidden_size' attribute")
+        
+        vision_hidden = get_hidden_size(self.vision_encoder, "vision_encoder")
+        text_hidden = get_hidden_size(self.text_encoder, "text_encoder")
+        return vision_hidden, text_hidden
+
+    def _create_projection_layers(self, vision_hidden: int, text_hidden: int, proj_dim: int) -> None:
+        """Create and initialize projection layers."""
         self.vision_proj = nn.Linear(vision_hidden, proj_dim, bias=True)
-        self.text_proj   = nn.Linear(text_hidden,   proj_dim, bias=True)
+        self.text_proj = nn.Linear(text_hidden, proj_dim, bias=True)
+        
+        # Initialize weights with proper scaling
+        self._init_projection_weights(vision_hidden, text_hidden)
 
+    def _init_projection_weights(self, vision_hidden: int, text_hidden: int) -> None:
+        """Initialize projection layer weights with proper scaling."""
+        # Vision projection
         nn.init.normal_(self.vision_proj.weight, std=vision_hidden ** -0.5)
         nn.init.zeros_(self.vision_proj.bias)
+        
+        # Text projection  
         nn.init.normal_(self.text_proj.weight, std=text_hidden ** -0.5)
         nn.init.zeros_(self.text_proj.bias)
 
+    def _initialize_temperature(self, temperature: float) -> None:
+        """Initialize temperature buffer for similarity scaling."""
         self.register_buffer(
             "logit_log_temp",
-            torch.log(torch.tensor(1.0 / float(temperature), dtype=torch.float32))
+            torch.log(torch.tensor(1.0 / temperature, dtype=torch.float32))
         )
 
     def encode_image(self, image: torch.Tensor) -> torch.Tensor:

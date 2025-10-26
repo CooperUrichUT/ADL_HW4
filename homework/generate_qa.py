@@ -42,49 +42,84 @@ def extract_frame_info(image_path: str) -> tuple[int, int]:
 def draw_detections(
     image_path: str, info_path: str, font_scale: float = 0.5, thickness: int = 1, min_box_size: int = 5
 ) -> np.ndarray:
-    pil_image = Image.open(image_path)
-    if pil_image is None:
-        raise ValueError(f"Could not read image at {image_path}")
-
+    # Load and validate image
+    try:
+        pil_image = Image.open(image_path)
+        pil_image.verify()  # Verify it's a valid image
+        pil_image = Image.open(image_path)  # Re-open after verify closes the file
+    except (FileNotFoundError, IOError, Image.UnidentifiedImageError) as e:
+        raise ValueError(f"Could not load image at {image_path}: {e}")
+    
     img_width, img_height = pil_image.size
     draw = ImageDraw.Draw(pil_image)
-
-    with open(info_path) as f:
-        info = json.load(f)
-
-    _, view_index = extract_frame_info(image_path)
-
-    if view_index < len(info["detections"]):
-        frame_detections = info["detections"][view_index]
-    else:
-        print(f"Warning: View index {view_index} out of range for detections")
+    
+    # Load detection data
+    try:
+        with open(info_path, 'r') as f:
+            info = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Warning: Could not load detection data from {info_path}: {e}")
         return np.array(pil_image)
-
+    
+    # Extract view index from filename
+    _, view_index = extract_frame_info(image_path)
+    
+    # Get detections for this view
+    try:
+        detections = info["detections"]
+        if view_index >= len(detections):
+            print(f"Warning: View index {view_index} out of range for detections")
+            return np.array(pil_image)
+        frame_detections = detections[view_index]
+    except (KeyError, IndexError, TypeError) as e:
+        print(f"Warning: Invalid detection data format in {info_path}: {e}")
+        return np.array(pil_image)
+    
+    # Calculate scaling factors for coordinate transformation
     scale_x = img_width / ORIGINAL_WIDTH
     scale_y = img_height / ORIGINAL_HEIGHT
-
+    
+    # Process each detection
     for detection in frame_detections:
-        class_id, track_id, x1, y1, x2, y2 = detection
-        class_id = int(class_id)
-        track_id = int(track_id)
-
+        # Safely parse detection data
+        try:
+            class_id = int(detection[0])
+            track_id = int(detection[1])
+            x1, y1, x2, y2 = map(float, detection[2:6])
+        except (ValueError, IndexError, TypeError):
+            print(f"Warning: Invalid detection format: {detection}")
+            continue
+        
+        # Only draw kart objects (class_id = 1)
         if class_id != 1:
             continue
-
-        x1_scaled = int(x1 * scale_x)
-        y1_scaled = int(y1 * scale_y)
-        x2_scaled = int(x2 * scale_x)
-        y2_scaled = int(y2 * scale_y)
-
-        if (x2_scaled - x1_scaled) < min_box_size or (y2_scaled - y1_scaled) < min_box_size:
+        
+        # Scale coordinates to current image size
+        scaled_coords = (
+            int(x1 * scale_x), int(y1 * scale_y),
+            int(x2 * scale_x), int(y2 * scale_y)
+        )
+        x1_scaled, y1_scaled, x2_scaled, y2_scaled = scaled_coords
+        
+        # Filter out boxes that are too small
+        box_width = x2_scaled - x1_scaled
+        box_height = y2_scaled - y1_scaled
+        if box_width < min_box_size or box_height < min_box_size:
             continue
-
-        if x2_scaled < 0 or x1_scaled > img_width or y2_scaled < 0 or y1_scaled > img_height:
+        
+        # Filter out boxes that are completely outside image bounds
+        if (x2_scaled < 0 or x1_scaled > img_width or 
+            y2_scaled < 0 or y1_scaled > img_height):
             continue
-
+        
+        # Determine color and draw bounding box
         color = (255, 0, 0) if track_id == 0 else COLORS.get(class_id, (255, 255, 255))
-        draw.rectangle([(x1_scaled, y1_scaled), (x2_scaled, y2_scaled)], outline=color, width=thickness)
-
+        draw.rectangle(
+            [(x1_scaled, y1_scaled), (x2_scaled, y2_scaled)], 
+            outline=color, 
+            width=thickness
+        )
+    
     return np.array(pil_image)
 
 
